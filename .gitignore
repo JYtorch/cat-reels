@@ -1,0 +1,26 @@
+# Python
+*.py
+__pycache__/
+venv/
+*.pyc
+
+# 개발용 디버그 이미지
+debug_*.png
+screenshot_ui.png
+shorts_example.png
+reels_meme_example.png
+
+# 예시 출력 MP4 (루트만)
+/*.mp4
+reels_output/
+
+# IDE / 도구
+.vscode/
+.claude/
+.playwright-mcp/
+check_audio.html
+test_export.mjs
+test.py
+
+# 배경 임시 업로드 파일
+backgrounds/upload_*.jpg
