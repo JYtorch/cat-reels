@@ -127,6 +127,38 @@ header select:focus{outline:none;border-color:var(--accent)}
 /* ─ DnD ─ */
 .cut-item.dragging{opacity:0.4;border-style:dashed}
 .cut-item.drag-over{border-color:var(--accent2)!important;background:#0a1a2a!important}
+/* ─ MOBILE (기본: 숨김) ─ */
+.mob-cut-strip,.mob-nav,.mob-sheet,.mob-backdrop{display:none}
+/* ─ MOBILE (≤768px) ─ */
+@media(max-width:768px){
+  header{height:auto;min-height:44px;flex-wrap:wrap;padding:5px 8px;gap:5px}
+  header h1{font-size:13px}
+  .hd-sep{display:none}
+  .lpanel,.rpanel{display:none!important}
+  .main{flex-direction:column;overflow:hidden}
+  .center{padding:4px 4px 0;gap:3px;justify-content:flex-start;width:100%;min-width:0;overflow:hidden}
+  #canvas{width:min(405px,calc(100vw - 8px))!important;height:auto!important;aspect-ratio:405/720}
+  .ctool{gap:3px}
+  .ctool .btn{padding:6px 8px;font-size:11px}
+  .statusbox{font-size:10px}
+  .mob-cut-strip{display:flex;overflow-x:auto;gap:5px;padding:5px 8px;background:var(--panel);border-top:1px solid var(--border);flex-shrink:0;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  .mob-cut-strip::-webkit-scrollbar{display:none}
+  .mob-cut{flex-shrink:0;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;padding:5px 8px;cursor:pointer;min-width:56px;max-width:88px;text-align:center;user-select:none}
+  .mob-cut.active{border-color:var(--accent);background:#1a0a14}
+  .mob-cut-num{display:block;font-size:9px;color:var(--text3)}
+  .mob-cut-txt{display:block;font-size:10px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mob-nav{display:flex;background:var(--panel);border-top:1px solid var(--border);flex-shrink:0}
+  .mob-nav-btn{flex:1;padding:9px 2px;font-size:10px;font-weight:700;border:none;border-right:1px solid var(--border);background:none;color:var(--text2);cursor:pointer;font-family:inherit;white-space:nowrap}
+  .mob-nav-btn:last-child{border-right:none}
+  .mob-nav-btn.accent{color:var(--accent)}
+  .mob-nav-btn.slide-on{color:#f0a040}
+  .mob-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:300}
+  .mob-backdrop.open{display:block}
+  .mob-sheet{display:flex;position:fixed;bottom:0;left:0;right:0;max-height:72vh;background:var(--panel);border-top:1.5px solid var(--border);border-radius:14px 14px 0 0;z-index:301;transform:translateY(100%);transition:transform .26s ease;flex-direction:column}
+  .mob-sheet.open{transform:translateY(0)}
+  .mob-sheet-handle{width:34px;height:4px;background:var(--border);border-radius:2px;margin:8px auto 2px;flex-shrink:0;cursor:pointer}
+  .mob-sheet-inner{overflow-y:auto;padding:0 8px 24px;flex:1}
+}
 </style>
 </head>
 <body>
@@ -195,6 +227,23 @@ header select:focus{outline:none;border-color:var(--accent)}
       <div style="color:var(--text3);font-size:11px;padding:12px;text-align:center">컷을 선택하세요</div>
     </div>
   </div>
+</div>
+
+<!-- Mobile Cut Strip -->
+<div class="mob-cut-strip" id="mob-cut-strip"></div>
+<!-- Mobile Bottom Nav -->
+<div class="mob-nav">
+  <button class="mob-nav-btn" onclick="openMobileProps()">⚙ 속성</button>
+  <button class="mob-nav-btn" onclick="addCut()">+ 추가</button>
+  <button class="mob-nav-btn" onclick="delCut()" style="color:#ff8a80">✕ 삭제</button>
+  <button class="mob-nav-btn" id="mob-slide-btn" onclick="toggleSlideshow()">▶ 미리보기</button>
+  <button class="mob-nav-btn accent" onclick="startExport()">⬇ 내보내기</button>
+</div>
+<!-- Mobile Bottom Sheet (속성) -->
+<div class="mob-backdrop" id="mob-backdrop" onclick="closeMobileProps()"></div>
+<div class="mob-sheet" id="mob-sheet">
+  <div class="mob-sheet-handle" onclick="closeMobileProps()"></div>
+  <div class="mob-sheet-inner" id="mob-sheet-inner"></div>
 </div>
 
 <!-- Asset Modal -->
@@ -1121,6 +1170,7 @@ function renderCuts(){
     });
     list.appendChild(div);
   });
+  renderMobileCuts();
 }
 
 // ═══════════════════════════════════════════════
@@ -1318,6 +1368,7 @@ ${(()=>{
     </div>
   </div>
 </div>`;
+  syncMobileProps();
 }
 
 function toggleSec(hd){
@@ -1415,7 +1466,7 @@ canvas.addEventListener('dblclick',e=>{
   else if(S.selected==='title'){S.title.auto=true;S.title.x=null;S.title.y=null;draw();}
 });
 
-function cvCoords(e){ const r=canvas.getBoundingClientRect(); return{mx:e.clientX-r.left,my:e.clientY-r.top}; }
+function cvCoords(e){ const r=canvas.getBoundingClientRect(); const sx=canvas.width/r.width,sy=canvas.height/r.height; return{mx:(e.clientX-r.left)*sx,my:(e.clientY-r.top)*sy}; }
 function updateCursor(e){
   const{mx,my}=cvCoords(e);
   if(S.selected){const b=selBounds();if(b){for(const[hx,hy]of hpositions(b.x,b.y,b.w,b.h)){if(Math.hypot(mx-hx,my-hy)<=HANDLE_R+2){canvas.style.cursor='nwse-resize';return;}}}}
@@ -1502,6 +1553,8 @@ function toggleSlideshow(){
   if(slideshowActive){stopSlideshow();return;}
   const btn=document.getElementById('btn-slide');
   btn.classList.add('slide-on'); btn.textContent='⏹ 중지';
+  const mbtn=document.getElementById('mob-slide-btn');
+  if(mbtn){mbtn.classList.add('slide-on');mbtn.textContent='⏹ 중지';}
   slideshowActive=true;
   setStatus('슬라이드쇼 재생 중...');
   startPreviewBgm();
@@ -1513,6 +1566,7 @@ function playStep(idx){
   const n=S.cuts.length; if(!n){stopSlideshow();return;}
   const i=idx%n; S.dlgIdx=i;
   document.querySelectorAll('.cut-item').forEach((el,j)=>el.classList.toggle('active',j===i));
+  renderMobileCuts();
   draw();
   playPreviewSfx(S.cuts[i]);
   slideshowTimer=setTimeout(()=>playStep(idx+1),(S.cuts[i]?.dur||3)*1000);
@@ -1524,6 +1578,8 @@ function stopSlideshow(){
   stopAllPreviewAudio();
   const btn=document.getElementById('btn-slide');
   btn.classList.remove('slide-on'); btn.textContent='▶ 슬라이드';
+  const mbtn=document.getElementById('mob-slide-btn');
+  if(mbtn){mbtn.classList.remove('slide-on');mbtn.textContent='▶ 미리보기';}
   setStatus('슬라이드쇼 중지');
 }
 
@@ -1892,6 +1948,62 @@ async function loadBuiltinAssets(){
 // 초기화
 // ═══════════════════════════════════════════════
 // ═══════════════════════════════════════════════
+// 모바일 지원
+// ═══════════════════════════════════════════════
+function isMobile(){ return window.matchMedia('(max-width:768px)').matches; }
+
+// 터치 → 마우스 변환 (캔버스 오브젝트 드래그/리사이즈)
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  const t=e.touches[0];
+  canvas.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,clientX:t.clientX,clientY:t.clientY}));
+},{passive:false});
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  const t=e.touches[0];
+  canvas.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,clientX:t.clientX,clientY:t.clientY}));
+},{passive:false});
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  canvas.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));
+},{passive:false});
+
+// 모바일 컷 스트립 렌더링
+function renderMobileCuts(){
+  const strip=document.getElementById('mob-cut-strip');
+  if(!strip) return;
+  strip.innerHTML='';
+  S.cuts.forEach((c,i)=>{
+    const div=document.createElement('div');
+    div.className='mob-cut'+(i===S.dlgIdx?' active':'');
+    const txt=(c.text||'').replace(/\n/g,' ').slice(0,10)||'...';
+    div.innerHTML=`<span class="mob-cut-num">${i+1}</span><span class="mob-cut-txt">${esc(txt)}</span>`;
+    div.onclick=()=>{S.dlgIdx=i;S.selected=null;renderCuts();showProps();draw();if(!slideshowActive)playPreviewSfx(S.cuts[i]);};
+    strip.appendChild(div);
+  });
+  const active=strip.querySelector('.mob-cut.active');
+  if(active) active.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
+}
+
+// 모바일 속성 시트 열기/닫기/동기화
+function openMobileProps(){
+  const inner=document.getElementById('mob-sheet-inner');
+  if(inner) inner.innerHTML=document.getElementById('rpanel-body').innerHTML;
+  document.getElementById('mob-backdrop').classList.add('open');
+  document.getElementById('mob-sheet').classList.add('open');
+}
+function closeMobileProps(){
+  document.getElementById('mob-backdrop').classList.remove('open');
+  document.getElementById('mob-sheet').classList.remove('open');
+}
+function syncMobileProps(){
+  const sheet=document.getElementById('mob-sheet');
+  if(!sheet?.classList.contains('open')) return;
+  const inner=document.getElementById('mob-sheet-inner');
+  if(inner) inner.innerHTML=document.getElementById('rpanel-body').innerHTML;
+}
+
+// ═══════════════════════════════════════════════
 // 키보드 단축키
 // ═══════════════════════════════════════════════
 document.addEventListener('keydown',e=>{
@@ -1945,6 +2057,17 @@ function init(){
   });
   // 기본 에셋 백그라운드 로딩 (UI 블로킹 없음)
   loadBuiltinAssets();
+  // iOS 등 VP9 미지원 기기 → MP4 강제
+  if(window.VideoEncoder){
+    VideoEncoder.isConfigSupported({codec:'vp09.00.10.08',width:1080,height:1920,bitrate:4_000_000,framerate:30})
+      .then(s=>{
+        if(!s.supported){
+          const fmt=document.getElementById('sel-fmt');
+          if(fmt){fmt.value='mp4';const wo=fmt.querySelector('option[value="webm"]');if(wo)wo.disabled=true;}
+          if(isMobile()) setStatus('iOS: MP4 전용 모드');
+        }
+      }).catch(()=>{});
+  }
   const saved=localStorage.getItem(SAVE_KEY);
   if(saved){
     try{
