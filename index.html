@@ -124,6 +124,9 @@ header select:focus{outline:none;border-color:var(--accent)}
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#333;border-radius:3px}
+/* ─ DnD ─ */
+.cut-item.dragging{opacity:0.4;border-style:dashed}
+.cut-item.drag-over{border-color:var(--accent2)!important;background:#0a1a2a!important}
 </style>
 </head>
 <body>
@@ -142,6 +145,8 @@ header select:focus{outline:none;border-color:var(--accent)}
     </select>
   </div>
   <div class="hd-sep"></div>
+  <button class="btn btn-dark" onclick="undo()" title="실행 취소 (Ctrl+Z)">↩</button>
+  <button class="btn btn-dark" onclick="redo()" title="다시 실행 (Ctrl+Y)">↪</button>
   <button class="btn btn-blue" onclick="openAssetModal()">📦 에셋 관리</button>
   <button class="btn btn-dark" onclick="openJsonModal()">📋 JSON</button>
   <div class="ml-auto"></div>
@@ -159,7 +164,7 @@ header select:focus{outline:none;border-color:var(--accent)}
 <div class="main">
   <!-- LEFT: Cut List -->
   <div class="lpanel">
-    <div class="panel-hd">컷 목록 <span id="cut-count"></span></div>
+    <div class="panel-hd">컷 목록 <span id="cut-count"></span><span id="total-dur" style="margin-left:auto;color:var(--accent2);font-weight:normal"></span></div>
     <div class="cut-list" id="cut-list"></div>
     <div class="lp-btns">
       <button class="btn btn-dark" onclick="addCut()" title="현재 컷 복제 후 추가">+ 추가</button>
@@ -379,7 +384,7 @@ function mkState(){
 }
 
 function cut(){ return S.cuts[S.dlgIdx]||{}; }
-function setC(k,v){ const c=S.cuts[S.dlgIdx]; if(c){ c[k]=v; autoSave(); } }
+function setC(k,v){ if(slideshowActive) return; const c=S.cuts[S.dlgIdx]; if(c){ c[k]=v; autoSave(); } }
 
 function mkCut(ep, d){
   const lc = d?.left_cat  || ep.default_left_cat;
@@ -407,16 +412,14 @@ function getRY(c){ return c.rightY!==null?c.rightY:FH-c.rightH-100; }
 // ═══════════════════════════════════════════════
 function applyGS(data){
   for(let i=0;i<data.length;i+=4){
-    let r=data[i], g=data[i+1], b=data[i+2];
+    const r=data[i], g=data[i+1], b=data[i+2];
     const maxRB=Math.max(r,b);
     const diff=g-maxRB;
-    // ① 알파 계산: 임계값 20 / 전환 범위 40 (이전: 30/50 → 더 많은 경계 픽셀 제거)
-    const a=Math.max(0,Math.min(1,1-(diff-20)/40));
-    // ② 경계 프린지 하드 클램핑: 거의 투명한 픽셀은 완전 투명으로 (녹색 프린지 제거)
-    const aFinal = a < 0.15 ? 0 : a;
-    data[i+3]=Math.round(aFinal*255);
-    // ③ 강한 그린 스필 억제: 경계 픽셀의 녹색 채널을 max(r,b)로 완전 차단
-    if(diff>0 && aFinal<1){
+    // Python reels_maker.py와 동일한 파라미터: threshold=30, range=50
+    const a=Math.max(0,Math.min(1,1-(diff-30)/50));
+    data[i+3]=Math.round(a*255);
+    // 그린 스필 억제: 반투명 경계 픽셀의 녹색 채널을 max(r,b)로 억제
+    if(diff>0 && a<1){
       data[i+1]=Math.min(g, maxRB);
     }
   }
@@ -455,6 +458,10 @@ function shouldFlip(name,side){
 
 // 캐릭터별 마지막 성공 프레임 캐시 (루프 전환 순간 readyState 하락 대비)
 const _catFrameCache = {};
+// 내보내기 전용 프레임 캐시: cacheKey → ImageData[] (크로마키 적용 완료)
+let _exportFrameCache = null;
+// 내보내기 중 현재 컷 내 경과 시간(초) — drawCat이 정확한 프레임 인덱스를 참조
+let _exportCutElapsedSec = 0;
 
 function drawCat(side,c){
   const name=side==='left'?c.leftCat:c.rightCat;
@@ -468,6 +475,20 @@ function drawCat(side,c){
   const pcw=Math.max(1,Math.ceil(cw)), pch=Math.max(1,Math.ceil(ch));
   const cacheKey=`${name}_${pcw}_${pch}_${flipH?1:0}_${flipV?1:0}`;
 
+  // 내보내기 모드: seek으로 미리 수집한 크로마키 프레임 사용 (정확한 타이밍 보장)
+  if(_exportFrameCache){
+    const frames=_exportFrameCache[cacheKey];
+    if(frames&&frames.length){
+      const idx=Math.floor(_exportCutElapsedSec*30)%frames.length;
+      procCanvas.width=pcw; procCanvas.height=pch;
+      procCtx.putImageData(frames[idx],0,0);
+      ctx.drawImage(procCanvas,ox,oy,cw,ch);
+      return;
+    }
+    // frames 없음(캐시 미스): 아래 live 캡처로 폴백
+  }
+
+  // 미리보기 모드: 실시간 video 요소에서 프레임 캡처
   if(asset?.ready&&asset.video&&asset.video.readyState>=2){
     const vid=asset.video;
     procCanvas.width=pcw; procCanvas.height=pch;
@@ -623,6 +644,102 @@ function startAnim(){
 function stopAnim(){ if(animHandle){cancelAnimationFrame(animHandle);animHandle=null;} }
 
 // ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════
+// 내보내기 전용 프레임 사전 캐시 (Python preload_gs와 동일 방식)
+// seek 기반으로 각 프레임을 정확한 타임코드에 캡처 후 크로마키 처리
+// ═══════════════════════════════════════════════
+async function buildExportFrameCache(cuts, onSub, onProgress){
+  const EXP_FPS=30;
+  const cache={};
+
+  // SC=1.0 기준으로 사용되는 고유 (name, pcw, pch, flipH, flipV) 조합 수집
+  const combos=new Map();
+  for(const c of cuts){
+    for(const side of ['left','right']){
+      const name =side==='left'?c.leftCat:c.rightCat;
+      const h    =side==='left'?c.leftH  :c.rightH;
+      const cw   =catWF(name,h); // SC=1.0
+      const flipH=(shouldFlip(name,side))!==(side==='left'?c.leftFlipH:c.rightFlipH);
+      const flipV=side==='left'?c.leftFlipV:c.rightFlipV;
+      const pcw  =Math.max(1,Math.ceil(cw));
+      const pch  =Math.max(1,Math.ceil(h));
+      const key  =`${name}_${pcw}_${pch}_${flipH?1:0}_${flipV?1:0}`;
+      if(!combos.has(key)){
+        const asset=Assets.cats[name];
+        if(asset?.video) combos.set(key,{name,pcw,pch,flipH,flipV,vid:asset.video});
+      }
+    }
+  }
+
+  const tmpCanvas=document.createElement('canvas');
+  const tmpCtx   =tmpCanvas.getContext('2d',{willReadFrequently:true});
+  let doneCount=0;
+  const totalCombos=Math.max(1,combos.size);
+
+  for(const [key,{name,pcw,pch,flipH,flipV,vid}] of combos){
+    onSub(`캐릭터 캐시: ${name} (${doneCount+1}/${combos.size})`);
+
+    // 재생 중 seek 충돌 방지: 캐시 빌드 동안 일시정지
+    const wasPlaying=!vid.paused;
+    if(wasPlaying) vid.pause();
+
+    // duration 확보 대기 (readyState<1이면 메타데이터 로드 대기)
+    if(!isFinite(vid.duration)||vid.duration<=0){
+      await new Promise(r=>{
+        if(vid.readyState>=1){r();return;}
+        vid.addEventListener('loadedmetadata',r,{once:true});
+      });
+    }
+    const duration=vid.duration;
+
+    // duration이 유효하지 않으면 이 캐릭터 스킵 (런타임에서 live 캡처 폴백)
+    if(!isFinite(duration)||duration<=0){
+      if(wasPlaying) vid.play().catch(()=>{});
+      doneCount++;
+      continue;
+    }
+
+    const totalFrames=Math.round(duration*EXP_FPS)||1;
+    tmpCanvas.width=pcw; tmpCanvas.height=pch;
+    const frames=[];
+
+    for(let i=0;i<totalFrames;i++){
+      const t=Math.min(i/EXP_FPS, duration-1e-4);
+      // addEventListener를 currentTime 설정 전에 등록해야 race condition 방지
+      await new Promise(r=>{
+        vid.addEventListener('seeked',r,{once:true});
+        vid.currentTime=t;
+      });
+
+      tmpCtx.save();
+      tmpCtx.clearRect(0,0,pcw,pch);
+      if(flipH){tmpCtx.translate(pcw,0);tmpCtx.scale(-1,1);}
+      if(flipV){tmpCtx.translate(0,pch);tmpCtx.scale(1,-1);}
+      tmpCtx.drawImage(vid,0,0,pcw,pch);
+      tmpCtx.restore();
+
+      const id=tmpCtx.getImageData(0,0,pcw,pch);
+      applyGS(id.data);
+      frames.push(id);
+
+      // 매 5프레임마다 진행률 업데이트 및 이벤트 루프 양보
+      if(i%5===0){
+        onProgress((doneCount+i/totalFrames)/totalCombos);
+        await new Promise(r=>setTimeout(r,0));
+      }
+    }
+
+    cache[key]=frames;
+    doneCount++;
+
+    // 각 캐릭터 캐시 완료 후 재생 복원
+    if(wasPlaying){ vid.currentTime=0; vid.play().catch(()=>{}); }
+  }
+
+  onProgress(1);
+  return cache;
+}
+
 // 영상 내보내기 (WebCodecs + webm-muxer)
 // ═══════════════════════════════════════════════
 let exportBlob=null;
@@ -662,6 +779,7 @@ async function startExport(){
 
   function restoreGlobals(){
     isExporting=false;
+    _exportFrameCache=null; // 내보내기 프레임 캐시 해제
     ctx=savedCtx; CW=PREVIEW_CW; CH=PREVIEW_CH; SC=PREVIEW_CW/FW;
     S.dlgIdx=savedIdx; setExpOverlay(false);
     btn.disabled=false; startAnim(); draw();
@@ -684,6 +802,10 @@ async function startExport(){
     try { audioRendered=await renderAudioOffline(totalDur); } catch(e){ console.warn('오디오 렌더 실패:',e); }
 
     const hasAudio = !!(audioRendered && window.AudioEncoder);
+
+    // ── 캐릭터 프레임 사전 캐시 (seek 기반, Python preload_gs와 동일한 방식)
+    setExpSub('캐릭터 프레임 캐시 중...');
+    _exportFrameCache = await buildExportFrameCache(S.cuts, setExpSub, p=>setExpProgress(p*20));
 
     // ── muxer / encoder 설정
     let muxer, videoEncoder;
@@ -750,6 +872,7 @@ async function startExport(){
           cutElapsed-=(S.cuts[cutIdx].dur||3)*1000; cutIdx++;
         }
         S.dlgIdx=cutIdx;
+        _exportCutElapsedSec=cutElapsed/1000; // drawCat의 프레임 인덱스 계산에 사용
         draw();
 
         const timestamp=Math.round(frameCount*1_000_000/EXP_FPS);
@@ -790,8 +913,10 @@ async function startExport(){
     setExpProgress(100);
 
     restoreGlobals();
-    document.getElementById('btn-dl').style.display='block';
     const fmtLabel = useMP4 ? `MP4(H.264${hasAudio?'+AAC':''})` : `WebM(VP9${hasAudio?'+Opus':''})`;
+    const dlBtn=document.getElementById('btn-dl');
+    dlBtn.textContent=`⬇ ${useMP4?'MP4':'WebM'} 다운로드`;
+    dlBtn.style.display='block';
     setStatus(`✅ 완료! ${(exportBlob.size/1024/1024).toFixed(1)}MB · ${fmtLabel} · 다운로드 버튼 클릭`);
 
   } catch(err){
@@ -911,7 +1036,7 @@ function setStatus(msg){ document.getElementById('statusbox').innerHTML=msg; }
 function addCut(){
   const base=S.cuts.length>0?JSON.parse(JSON.stringify(S.cuts[S.dlgIdx])):null;
   const ep=S.ep||{background:'',left_name:'L',right_name:'R',default_left_cat:'typing_keyboard',default_right_cat:'talk'};
-  const nc=base?Object.assign({},base,{_lbl:{},_diag:{},text:''})
+  const nc=base?Object.assign({},base,{_lbl:{},_diag:{},text:'',sfx:null})
                 :mkCut(ep,null);
   S.cuts.splice(S.dlgIdx+1,0,nc);
   S.dlgIdx++;
@@ -961,6 +1086,9 @@ function resetCutLayout(){
 function renderCuts(){
   const list=document.getElementById('cut-list');
   document.getElementById('cut-count').textContent=`(${S.cuts.length})`;
+  const totalDur=S.cuts.reduce((s,c)=>s+(c.dur||3),0);
+  const durEl=document.getElementById('total-dur');
+  if(durEl) durEl.textContent=`총 ${totalDur.toFixed(1)}s`;
   list.innerHTML='';
   S.cuts.forEach((c,i)=>{
     const isL=c.speaker==='left';
@@ -968,6 +1096,7 @@ function renderCuts(){
     const txt=(c.text||'').replace(/\n/g,' ').slice(0,36)+(c.text&&c.text.length>36?'…':'');
     const div=document.createElement('div');
     div.className='cut-item'+(i===S.dlgIdx?' active':'');
+    div.draggable=true;
     div.innerHTML=`
       <div class="ci-top">
         <span class="ci-num">${i+1}</span>
@@ -977,6 +1106,19 @@ function renderCuts(){
       <div class="ci-txt">${esc(txt)||'<span style="color:#334">(대사 없음)</span>'}</div>
       <div class="ci-cats">${esc(c.leftCat)} ↔ ${esc(c.rightCat)}</div>`;
     div.onclick=()=>{ S.dlgIdx=i; S.selected=null; renderCuts(); showProps(); draw(); if(!slideshowActive) playPreviewSfx(S.cuts[i]); };
+    div.addEventListener('dragstart',e=>{e.dataTransfer.setData('text/plain',String(i));div.classList.add('dragging');});
+    div.addEventListener('dragend',()=>div.classList.remove('dragging'));
+    div.addEventListener('dragover',e=>{e.preventDefault();div.classList.add('drag-over');});
+    div.addEventListener('dragleave',()=>div.classList.remove('drag-over'));
+    div.addEventListener('drop',e=>{
+      e.preventDefault(); div.classList.remove('drag-over');
+      const from=parseInt(e.dataTransfer.getData('text/plain'));
+      if(isNaN(from)||from===i) return;
+      const [moved]=S.cuts.splice(from,1);
+      S.cuts.splice(i,0,moved);
+      S.dlgIdx=i;
+      renderCuts(); showProps(); draw(); autoSave();
+    });
     list.appendChild(div);
   });
 }
@@ -1018,6 +1160,12 @@ function showProps(){
         oninput="setC('leftH',+this.value);document.getElementById('lh-v').textContent=this.value;draw()">
       <span class="pval" id="lh-v">${c.leftH}</span>
     </div>
+    <div class="prow"><label>X / Y</label>
+      <input type="number" title="X 좌표" style="width:58px" value="${c.leftX??-60}"
+        onchange="setC('leftX',+this.value);draw()">
+      <input type="number" title="Y 좌표" style="width:58px" value="${getLY(c)}"
+        onchange="setC('leftY',+this.value);draw()">
+    </div>
     <div class="prow"><label style="color:#ff8a80">오른쪽</label>
       <div class="cat-row" style="flex:1">
         <select onchange="setC('rightCat',this.value);showProps();draw()">${cats.map(n=>`<option${n===c.rightCat?' selected':''}>${n}</option>`).join('')}</select>
@@ -1029,6 +1177,12 @@ function showProps(){
       <input type="range" min="200" max="1100" step="10" value="${c.rightH}"
         oninput="setC('rightH',+this.value);document.getElementById('rh-v').textContent=this.value;draw()">
       <span class="pval" id="rh-v">${c.rightH}</span>
+    </div>
+    <div class="prow"><label>X / Y</label>
+      <input type="number" title="X 좌표" style="width:58px" value="${getRX(c)}"
+        onchange="setC('rightX',+this.value);draw()">
+      <input type="number" title="Y 좌표" style="width:58px" value="${getRY(c)}"
+        onchange="setC('rightY',+this.value);draw()">
     </div>
   </div>
 </div>
@@ -1379,11 +1533,47 @@ function stopSlideshow(){
 const SAVE_KEY='reels_editor_v5';
 const SKIP_KEYS=['_lbl','_diag'];
 
+// ─ Undo/Redo ─
+const _history=[];
+let _historyIdx=-1;
+let _suppressHistory=false;
+
+function _makeSnap(){
+  const cuts=S.cuts.map(c=>{const o={};for(const[k,v]of Object.entries(c)){if(!SKIP_KEYS.includes(k))o[k]=v;}return o;});
+  const title={...S.title};delete title._cx;delete title._cy;delete title._cw;delete title._ch;
+  return JSON.stringify({ep_id:S.epId,bgm:S.epBgm,title,cuts});
+}
+
+function _pushHistory(snap){
+  if(_historyIdx<_history.length-1) _history.splice(_historyIdx+1);
+  _history.push(snap);
+  if(_history.length>30) _history.shift();
+  _historyIdx=_history.length-1;
+}
+
+function undo(){
+  if(_historyIdx<=0){setStatus('더 이상 되돌릴 수 없습니다');return;}
+  _historyIdx--;
+  _suppressHistory=true;
+  restoreData(JSON.parse(_history[_historyIdx]));
+  _suppressHistory=false;
+  setStatus('↩ 실행 취소');
+}
+
+function redo(){
+  if(_historyIdx>=_history.length-1){setStatus('더 이상 다시 실행할 수 없습니다');return;}
+  _historyIdx++;
+  _suppressHistory=true;
+  restoreData(JSON.parse(_history[_historyIdx]));
+  _suppressHistory=false;
+  setStatus('↪ 다시 실행');
+}
+
 function autoSave(){
   try{
-    const cuts=S.cuts.map(c=>{const o={};for(const[k,v]of Object.entries(c)){if(!SKIP_KEYS.includes(k))o[k]=v;}return o;});
-    const title={...S.title}; delete title._cx;delete title._cy;delete title._cw;delete title._ch;
-    localStorage.setItem(SAVE_KEY,JSON.stringify({ep_id:S.epId,bgm:S.epBgm,title,cuts}));
+    const snap=_makeSnap();
+    localStorage.setItem(SAVE_KEY,snap);
+    if(!_suppressHistory) _pushHistory(snap);
   }catch(e){}
 }
 
@@ -1419,6 +1609,13 @@ function importJson(){
 // 에피소드 로드
 // ═══════════════════════════════════════════════
 function loadEp(id){
+  // B2: 기존 작업이 있을 때 에피소드 전환 전 확인
+  if(S.cuts&&S.cuts.length>0&&S.epId&&S.epId!==id){
+    if(!confirm('에피소드를 변경하면 현재 작업이 초기화됩니다. 계속할까요?')){
+      document.getElementById('ep-sel').value=S.epId;
+      return;
+    }
+  }
   // 에피소드 전환 시 진행 중인 오디오/슬라이드쇼 중지
   if(slideshowActive) stopSlideshow();
   else stopAllPreviewAudio();
@@ -1694,6 +1891,50 @@ async function loadBuiltinAssets(){
 // ═══════════════════════════════════════════════
 // 초기화
 // ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════
+// 키보드 단축키
+// ═══════════════════════════════════════════════
+document.addEventListener('keydown',e=>{
+  const tag=document.activeElement?.tagName;
+  if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
+  if(e.ctrlKey&&e.key==='z'){e.preventDefault();undo();return;}
+  if(e.ctrlKey&&(e.key==='y'||e.key==='Z')){e.preventDefault();redo();return;}
+  if(e.ctrlKey&&e.key==='d'){e.preventDefault();dupCut();return;}
+  if(e.key==='Delete'||e.key==='Backspace'){e.preventDefault();delCut();return;}
+  if(e.key==='Escape'){e.preventDefault();S.selected=null;draw();return;}
+  if(e.key===' '){e.preventDefault();toggleSlideshow();return;}
+  if(e.key==='ArrowLeft'||e.key==='ArrowRight'||e.key==='ArrowUp'||e.key==='ArrowDown'){
+    if(!S.selected) return;
+    e.preventDefault();
+    const step=e.shiftKey?10:1;
+    const c=cut(); if(!c) return;
+    if(S.selected==='left'){
+      if(e.key==='ArrowLeft') c.leftX=(c.leftX??-60)-step;
+      else if(e.key==='ArrowRight') c.leftX=(c.leftX??-60)+step;
+      else if(e.key==='ArrowUp') c.leftY=getLY(c)-step;
+      else c.leftY=getLY(c)+step;
+    } else if(S.selected==='right'){
+      if(e.key==='ArrowLeft') c.rightX=getRX(c)-step;
+      else if(e.key==='ArrowRight') c.rightX=getRX(c)+step;
+      else if(e.key==='ArrowUp') c.rightY=getRY(c)-step;
+      else c.rightY=getRY(c)+step;
+    } else if(S.selected==='diag'){
+      c.diagAuto=false;
+      if(e.key==='ArrowLeft') c.diagX=(c.diagX??0)-step;
+      else if(e.key==='ArrowRight') c.diagX=(c.diagX??0)+step;
+      else if(e.key==='ArrowUp') c.diagY=(c.diagY??0)-step;
+      else c.diagY=(c.diagY??0)+step;
+    } else if(S.selected==='title'){
+      S.title.auto=false;
+      if(e.key==='ArrowLeft') S.title.x=(S.title.x??0)-step;
+      else if(e.key==='ArrowRight') S.title.x=(S.title.x??0)+step;
+      else if(e.key==='ArrowUp') S.title.y=(S.title.y??0)-step;
+      else S.title.y=(S.title.y??0)+step;
+    }
+    draw(); autoSave(); showProps();
+  }
+});
+
 function init(){
   rebuildCatInfo();
   const sel=document.getElementById('ep-sel');
