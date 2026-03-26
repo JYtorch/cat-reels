@@ -852,9 +852,35 @@ async function startExport(){
 
     const hasAudio = !!(audioRendered && window.AudioEncoder);
 
-    // ── 캐릭터 프레임 사전 캐시 (seek 기반, Python preload_gs와 동일한 방식)
-    setExpSub('캐릭터 프레임 캐시 중...');
-    _exportFrameCache = await buildExportFrameCache(S.cuts, setExpSub, p=>setExpProgress(p*20));
+    // ── 모바일 여부에 따라 경량/풀화질 경로 분기
+    // 모바일: 프레임 캐시 스킵(메모리 절약), 540×960, 15fps, 일반 canvas
+    // 데스크탑: 기존 방식 유지 (1080×1920, 30fps, OffscreenCanvas)
+    const expMobile = isMobile();
+    const expCW  = expMobile ? 540  : EXPORT_CW;
+    const expCH  = expMobile ? 960  : EXPORT_CH;
+    const expFPS = expMobile ? 15   : 30;
+    const expBR  = expMobile ? 3_000_000 : 8_000_000;
+
+    // ── 캐릭터 프레임 사전 캐시 (데스크탑만 — 모바일은 메모리 초과 방지를 위해 스킵)
+    if(!expMobile){
+      setExpSub('캐릭터 프레임 캐시 중...');
+      _exportFrameCache = await buildExportFrameCache(S.cuts, setExpSub, p=>setExpProgress(p*20));
+    } else {
+      _exportFrameCache = null;
+      setExpProgress(20);
+    }
+
+    // ── 사용 가능한 H.264 코덱 문자열 탐색 (iOS 호환성)
+    async function pickH264Codec(w,h,fps,br){
+      const candidates=['avc1.640028','avc1.4d0028','avc1.4D401F','avc1.42E028','avc1.42E01F'];
+      for(const codec of candidates){
+        try{
+          const s=await VideoEncoder.isConfigSupported({codec,width:w,height:h,bitrate:br,framerate:fps});
+          if(s.supported) return codec;
+        }catch(e){}
+      }
+      return 'avc1.42E01F';
+    }
 
     // ── muxer / encoder 설정
     let muxer, videoEncoder;
@@ -862,26 +888,26 @@ async function startExport(){
       const { Muxer, ArrayBufferTarget } = window.Mp4Muxer;
       muxer = new Muxer({
         target: new ArrayBufferTarget(),
-        video:{ codec:'avc', width:EXPORT_CW, height:EXPORT_CH },
+        video:{ codec:'avc', width:expCW, height:expCH },
         ...(hasAudio ? {audio:{codec:'aac',numberOfChannels:2,sampleRate:44100}} : {}),
         firstTimestampBehavior:'offset',
         fastStart:'in-memory',
       });
+      const h264codec = await pickH264Codec(expCW, expCH, expFPS, expBR);
       videoEncoder = new VideoEncoder({
         output:(chunk,meta)=>muxer.addVideoChunk(chunk,meta),
         error:(e)=>{ throw e; },
       });
       videoEncoder.configure({
-        codec:'avc1.4d0028',       // H.264 High Profile Level 4.0
-        width:EXPORT_CW, height:EXPORT_CH,
-        bitrate:8_000_000, framerate:30,
-        latencyMode:'quality',
+        codec: h264codec,
+        width:expCW, height:expCH,
+        bitrate:expBR, framerate:expFPS,
       });
     } else {
       const { Muxer, ArrayBufferTarget } = window.WebMMuxer;
       muxer = new Muxer({
         target: new ArrayBufferTarget(),
-        video:{ codec:'V_VP9', width:EXPORT_CW, height:EXPORT_CH, frameRate:30 },
+        video:{ codec:'V_VP9', width:expCW, height:expCH, frameRate:expFPS },
         ...(hasAudio ? {audio:{codec:'A_OPUS',numberOfChannels:2,sampleRate:44100}} : {}),
         firstTimestampBehavior:'offset',
       });
@@ -891,49 +917,53 @@ async function startExport(){
       });
       videoEncoder.configure({
         codec:'vp09.00.10.08',
-        width:EXPORT_CW, height:EXPORT_CH,
-        bitrate:8_000_000, framerate:30,
-        latencyMode:'quality',
+        width:expCW, height:expCH,
+        bitrate:expBR, framerate:expFPS,
       });
     }
 
-    // ── OffscreenCanvas 생성 & 전역 덮어씀
-    const offCanvas=new OffscreenCanvas(EXPORT_CW,EXPORT_CH);
-    ctx=offCanvas.getContext('2d'); CW=EXPORT_CW; CH=EXPORT_CH; SC=1.0;
+    // ── 렌더 canvas 생성
+    // 모바일: 일반 HTMLCanvasElement (OffscreenCanvas는 iOS에서 VideoFrame 생성 시 크래시 유발)
+    // 데스크탑: OffscreenCanvas (메인 스레드 블로킹 없음)
+    let expCanvas;
+    if(!expMobile && typeof OffscreenCanvas!=='undefined'){
+      expCanvas = new OffscreenCanvas(expCW, expCH);
+    } else {
+      expCanvas = document.createElement('canvas');
+      expCanvas.width = expCW; expCanvas.height = expCH;
+    }
+    ctx=expCanvas.getContext('2d'); CW=expCW; CH=expCH; SC=expCW/FW;
 
     // ── 폰트 로딩 대기
     await document.fonts.ready;
 
     // ── 비디오 프레임 렌더 루프
-    const totalFrames=Math.ceil(totalDur*30);
-    const EXP_FPS=30;
+    const totalFrames=Math.ceil(totalDur*expFPS);
+    const EXP_FPS=expFPS;
     const FDuration=Math.round(1_000_000/EXP_FPS);
 
     setExpSub(`비디오 렌더링 (${totalFrames}프레임)...`);
     await new Promise(resolve=>{
-      // 고정 타임스텝: 실제 RAF 속도 무관하게 컷 진행 (1프레임 = 1000/30ms)
       const MS_PER_FRAME = 1000 / EXP_FPS;
       let frameCount=0, cutIdx=0, cutElapsed=0;
       function frame(){
-        // 고정 증분으로 컷 위치 계산
         cutElapsed += MS_PER_FRAME;
         while(cutIdx<S.cuts.length-1&&cutElapsed>=(S.cuts[cutIdx].dur||3)*1000){
           cutElapsed-=(S.cuts[cutIdx].dur||3)*1000; cutIdx++;
         }
         S.dlgIdx=cutIdx;
-        _exportCutElapsedSec=cutElapsed/1000; // drawCat의 프레임 인덱스 계산에 사용
+        _exportCutElapsedSec=cutElapsed/1000;
         draw();
 
         const timestamp=Math.round(frameCount*1_000_000/EXP_FPS);
-        const vf=new VideoFrame(offCanvas,{timestamp,duration:FDuration});
+        const vf=new VideoFrame(expCanvas,{timestamp,duration:FDuration});
         videoEncoder.encode(vf,{keyFrame:frameCount%30===0});
         vf.close();
 
         frameCount++;
-        setExpProgress(frameCount/totalFrames*( hasAudio?70:95 ));
+        setExpProgress(frameCount/totalFrames*(hasAudio?70:95));
         setExpSub(`비디오 ${frameCount}/${totalFrames} 프레임`);
         if(frameCount>=totalFrames){resolve();return;}
-        // 브라우저 응답성을 위해 매 10프레임마다 이벤트 루프 양보
         if(frameCount%10===0){
           setTimeout(frame, 0);
         } else {
