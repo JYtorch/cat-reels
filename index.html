@@ -2072,8 +2072,10 @@ function init(){
   if(saved){
     try{
       const data=JSON.parse(saved);
-      if(data?.cuts?.length&&confirm('이전 작업을 불러올까요?')){
-        restoreData(data); startAnim(); return;
+      if(data?.cuts?.length){
+        restoreData(data); startAnim();
+        setStatus('✅ 이전 작업 복원됨');
+        return;
       }
     }catch(e){}
   }
