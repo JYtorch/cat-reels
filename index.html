@@ -136,9 +136,10 @@ header select:focus{outline:none;border-color:var(--accent)}
   .hd-sep{display:none}
   .lpanel,.rpanel{display:none!important}
   .main{flex-direction:column;overflow:hidden}
-  .center{padding:4px 4px 0;gap:3px;justify-content:flex-start;width:100%;min-width:0;overflow:hidden}
-  #canvas{width:min(405px,calc(100vw - 8px))!important;height:auto!important;aspect-ratio:405/720}
-  .ctool{gap:3px}
+  .center{padding:4px 4px 0;gap:3px;justify-content:flex-start;width:100%;min-width:0}
+  /* 캔버스 높이를 화면에 맞게 제한 — ctool/strip/nav 영역(~210px) 확보 */
+  #canvas{width:min(calc(100vw - 8px),calc((100vh - 210px)*405/720))!important;width:min(calc(100vw - 8px),calc((100svh - 210px)*405/720))!important;height:auto!important;aspect-ratio:405/720}
+  .ctool{gap:3px;flex-wrap:wrap}
   .ctool .btn{padding:6px 8px;font-size:11px}
   .statusbox{font-size:10px}
   .mob-cut-strip{display:flex;overflow-x:auto;gap:5px;padding:5px 8px;background:var(--panel);border-top:1px solid var(--border);flex-shrink:0;scrollbar-width:none;-webkit-overflow-scrolling:touch}
@@ -152,6 +153,7 @@ header select:focus{outline:none;border-color:var(--accent)}
   .mob-nav-btn:last-child{border-right:none}
   .mob-nav-btn.accent{color:var(--accent)}
   .mob-nav-btn.slide-on{color:#f0a040}
+  .mob-nav-btn.dl{color:#6dff99!important;background:#061a08}
   .mob-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:300}
   .mob-backdrop.open{display:block}
   .mob-sheet{display:flex;position:fixed;bottom:0;left:0;right:0;max-height:72vh;background:var(--panel);border-top:1.5px solid var(--border);border-radius:14px 14px 0 0;z-index:301;transform:translateY(100%);transition:transform .26s ease;flex-direction:column}
@@ -233,11 +235,12 @@ header select:focus{outline:none;border-color:var(--accent)}
 <div class="mob-cut-strip" id="mob-cut-strip"></div>
 <!-- Mobile Bottom Nav -->
 <div class="mob-nav">
-  <button class="mob-nav-btn" onclick="openMobileProps()">⚙ 속성</button>
-  <button class="mob-nav-btn" onclick="addCut()">+ 추가</button>
-  <button class="mob-nav-btn" onclick="delCut()" style="color:#ff8a80">✕ 삭제</button>
-  <button class="mob-nav-btn" id="mob-slide-btn" onclick="toggleSlideshow()">▶ 미리보기</button>
-  <button class="mob-nav-btn accent" onclick="startExport()">⬇ 내보내기</button>
+  <button class="mob-nav-btn" onclick="openMobileProps()">⚙속성</button>
+  <button class="mob-nav-btn" onclick="addCut()">＋추가</button>
+  <button class="mob-nav-btn" onclick="dupCut()">복제</button>
+  <button class="mob-nav-btn" onclick="delCut()" style="color:#ff8a80">삭제</button>
+  <button class="mob-nav-btn" id="mob-slide-btn" onclick="toggleSlideshow()">▶</button>
+  <button class="mob-nav-btn accent" id="mob-export-btn" onclick="mobExportAction()">⬇생성</button>
 </div>
 <!-- Mobile Bottom Sheet (속성) -->
 <div class="mob-backdrop" id="mob-backdrop" onclick="closeMobileProps()"></div>
@@ -537,6 +540,11 @@ function drawCat(side,c){
     // frames 없음(캐시 미스): 아래 live 캡처로 폴백
   }
 
+  // iOS: asset.ready=false인 경우 play 재시도 (첫 제스처 이후 가능해질 수 있음)
+  if(asset?.video && !asset.ready && asset.video.readyState>=1){
+    asset.video.play().then(()=>{ asset.ready=true; }).catch(()=>{});
+  }
+
   // 미리보기 모드: 실시간 video 요소에서 프레임 캡처
   if(asset?.ready&&asset.video&&asset.video.readyState>=2){
     const vid=asset.video;
@@ -546,16 +554,21 @@ function drawCat(side,c){
     if(flipV){procCtx.translate(0,pch);procCtx.scale(1,-1);}
     procCtx.drawImage(vid,0,0,pcw,pch);
     procCtx.restore();
-    const id=procCtx.getImageData(0,0,pcw,pch);
-    applyGS(id.data); procCtx.putImageData(id,0,0);
-    // 마지막 성공 프레임 캐시에 저장
-    let fc=_catFrameCache[cacheKey];
-    if(!fc||fc.width!==pcw||fc.height!==pch){
-      fc=document.createElement('canvas'); fc.width=pcw; fc.height=pch;
-      _catFrameCache[cacheKey]=fc;
+    try{
+      const id=procCtx.getImageData(0,0,pcw,pch);
+      applyGS(id.data); procCtx.putImageData(id,0,0);
+      // 마지막 성공 프레임 캐시에 저장
+      let fc=_catFrameCache[cacheKey];
+      if(!fc||fc.width!==pcw||fc.height!==pch){
+        fc=document.createElement('canvas'); fc.width=pcw; fc.height=pch;
+        _catFrameCache[cacheKey]=fc;
+      }
+      fc.getContext('2d').drawImage(procCanvas,0,0);
+      ctx.drawImage(procCanvas,ox,oy,cw,ch);
+    }catch(e){
+      // CORS/보안 오류: 크로마키 없이 원본 드로우
+      ctx.drawImage(vid,ox,oy,cw,ch);
     }
-    fc.getContext('2d').drawImage(procCanvas,0,0);
-    ctx.drawImage(procCanvas,ox,oy,cw,ch);
   } else if(_catFrameCache[cacheKey]){
     // 비디오 루프 전환 순간 readyState 일시 하락 → 마지막 캐시 프레임 사용
     ctx.drawImage(_catFrameCache[cacheKey],ox,oy,cw,ch);
@@ -794,11 +807,28 @@ async function buildExportFrameCache(cuts, onSub, onProgress){
 let exportBlob=null;
 let isExporting=false;
 
+let _mobExportDone=false;
+function mobExportAction(){
+  if(_mobExportDone&&exportBlob){ downloadVideo(); return; }
+  startExport();
+}
+function _resetMobExportBtn(){
+  _mobExportDone=false;
+  const b=document.getElementById('mob-export-btn');
+  if(b){b.textContent='⬇생성';b.classList.remove('dl');}
+}
+function _doneMobExportBtn(){
+  _mobExportDone=true;
+  const b=document.getElementById('mob-export-btn');
+  if(b){b.textContent='⬇다운로드';b.classList.add('dl');}
+}
+
 async function startExport(){
   const btn=document.getElementById('btn-gen');
   btn.disabled=true;
   document.getElementById('btn-dl').style.display='none';
   exportBlob=null;
+  _resetMobExportBtn();
 
   if(slideshowActive) stopSlideshow();
   stopAnim();
@@ -860,6 +890,17 @@ async function startExport(){
     const expCH  = expMobile ? 960  : EXPORT_CH;
     const expFPS = expMobile ? 15   : 30;
     const expBR  = expMobile ? 3_000_000 : 8_000_000;
+
+    // ── 모바일: export 전 모든 비디오 재생 보장 (캐릭터 미표시 방지)
+    if(expMobile){
+      setExpSub('비디오 준비 중...');
+      await Promise.allSettled(
+        Object.values(Assets.cats)
+          .filter(a=>a.video)
+          .map(a=>a.video.play().then(()=>{a.ready=true;}).catch(()=>{}))
+      );
+      await new Promise(r=>setTimeout(r,300)); // 첫 프레임 decode 대기
+    }
 
     // ── 캐릭터 프레임 사전 캐시 (데스크탑만 — 모바일은 메모리 초과 방지를 위해 스킵)
     if(!expMobile){
@@ -996,7 +1037,10 @@ async function startExport(){
     const dlBtn=document.getElementById('btn-dl');
     dlBtn.textContent=`⬇ ${useMP4?'MP4':'WebM'} 다운로드`;
     dlBtn.style.display='block';
-    setStatus(`✅ 완료! ${(exportBlob.size/1024/1024).toFixed(1)}MB · ${fmtLabel} · 다운로드 버튼 클릭`);
+    _doneMobExportBtn();
+    setStatus(`✅ 완료! ${(exportBlob.size/1024/1024).toFixed(1)}MB · ${fmtLabel}`);
+    // 모바일: 완료 즉시 다운로드 플로우 실행
+    if(expMobile) setTimeout(()=>downloadVideo(), 400);
 
   } catch(err){
     console.error('Export error:',err);
@@ -1102,9 +1146,29 @@ function downloadVideo(){
   if(!exportBlob){setStatus('먼저 영상을 생성하세요');return;}
   const ext = exportBlob.type.includes('mp4') ? 'mp4' : 'webm';
   const url=URL.createObjectURL(exportBlob);
+  // iOS Safari: a.download이 blob URL에서 동작하지 않음 → 영상 오버레이 표시
+  if(/iPhone|iPad|iPod/i.test(navigator.userAgent)){
+    _showIOSDownload(url); return;
+  }
   const a=document.createElement('a'); a.href=url;
   a.download=`reels_${S.epId}_${Date.now()}.${ext}`; a.click();
   setTimeout(()=>URL.revokeObjectURL(url),5000);
+}
+
+function _showIOSDownload(url){
+  document.getElementById('ios-dl-ov')?.remove();
+  const ov=document.createElement('div');
+  ov.id='ios-dl-ov';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:2000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px';
+  ov.innerHTML=`
+    <div style="color:#dde;font-size:13px;text-align:center;line-height:1.8">
+      동영상을 <b style="color:#4fc3f7">길게 눌러</b> 저장하세요<br>
+      <span style="font-size:11px;color:#99a">공유(⎋) → 비디오 저장 / 사진 보관함</span>
+    </div>
+    <video src="${url}" controls playsinline style="width:100%;max-width:340px;max-height:50vh;border-radius:8px;background:#000"></video>
+    <button onclick="document.getElementById('ios-dl-ov').remove()"
+      style="padding:9px 32px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer">닫기</button>`;
+  document.body.appendChild(ov);
 }
 
 function setStatus(msg){ document.getElementById('statusbox').innerHTML=msg; }
@@ -2014,6 +2078,26 @@ function renderMobileCuts(){
   const active=strip.querySelector('.mob-cut.active');
   if(active) active.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
 }
+
+// iOS: 첫 사용자 제스처 시 모든 비디오 unlock
+function _unlockVideos(){
+  Object.values(Assets.cats).forEach(a=>{
+    if(a.video){
+      a.video.play().then(()=>{a.ready=true;draw();}).catch(()=>{});
+    }
+  });
+}
+document.addEventListener('pointerdown',_unlockVideos,{once:true});
+document.addEventListener('touchstart',_unlockVideos,{once:true,passive:true});
+
+// 탭/앱 복귀 시 비디오 재개
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden){
+    Object.values(Assets.cats).forEach(a=>{
+      if(a.video&&a.ready&&a.video.paused) a.video.play().catch(()=>{});
+    });
+  }
+});
 
 // 모바일 속성 시트 열기/닫기/동기화
 function openMobileProps(){
