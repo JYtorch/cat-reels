@@ -681,6 +681,11 @@ function drawCat(side,c){
   // 미리보기 모드: 실시간 video 요소에서 프레임 캡처
   if(asset?.ready&&asset.video&&asset.video.readyState>=2){
     const vid=asset.video;
+    // 루프 경계 seek 중: 검은 프레임 방지 — 마지막 캐시 즉시 사용 (O(1))
+    if(vid.seeking && _catFrameCache[cacheKey]){
+      ctx.drawImage(_catFrameCache[cacheKey],ox,oy,cw,ch);
+      return;
+    }
     // 같은 비디오 프레임이면 캐시된 결과 재사용 (getImageData + applyGS 생략)
     const cachedFC=_catFrameCache[cacheKey];
     if(cachedFC && cachedFC.width===pcw && cachedFC.height===pch &&
@@ -696,7 +701,27 @@ function drawCat(side,c){
     procCtx.restore();
     try{
       const id=procCtx.getImageData(0,0,pcw,pch);
-      applyGS(id.data); procCtx.putImageData(id,0,0);
+      applyGS(id.data);
+      // 검은 프레임 감지: 루프 경계에서 발생하는 all-black 프레임 → 캐시 폴백
+      // black px는 applyGS에서 alpha=1 그대로 통과 → 검은 박스 깜빡임의 원인
+      if(_catFrameCache[cacheKey]){
+        const pxTotal=pcw*pch;
+        const step=Math.max(1,Math.floor(pxTotal/400));
+        let opaqueN=0, darkN=0;
+        for(let pi=0;pi<pxTotal;pi+=step){
+          const j=pi<<2;
+          if(id.data[j+3]>10){
+            opaqueN++;
+            if(id.data[j]<15&&id.data[j+1]<15&&id.data[j+2]<15) darkN++;
+          }
+        }
+        // 불투명 픽셀의 85% 이상이 매우 어두우면 black frame으로 간주
+        if(opaqueN>pxTotal*0.01 && darkN/Math.max(1,opaqueN)>0.85){
+          ctx.drawImage(_catFrameCache[cacheKey],ox,oy,cw,ch);
+          return;
+        }
+      }
+      procCtx.putImageData(id,0,0);
       // 마지막 성공 프레임 캐시에 저장
       let fc=_catFrameCache[cacheKey];
       if(!fc||fc.width!==pcw||fc.height!==pch){
